@@ -165,6 +165,7 @@ static void get_reference(void *device_data);
 static void get_delta(void *device_data);
 static void run_reference_read(void *device_data);
 static void run_delta_read(void *device_data);
+static void flip_cover_enable(void *device_data);
 static void not_support_cmd(void *device_data);
 
 struct tsp_cmd tsp_cmds[] = {
@@ -185,6 +186,7 @@ struct tsp_cmd tsp_cmds[] = {
 	{TSP_CMD("get_delta", get_delta),},
 	{TSP_CMD("run_reference_read", run_reference_read),},
 	{TSP_CMD("run_delta_read", run_delta_read),},
+	{TSP_CMD("flip_cover_enable", flip_cover_enable),},
 	{TSP_CMD("not_support_cmd", not_support_cmd),},
 };
 
@@ -195,6 +197,7 @@ static int mxt_internal_suspend(struct mxt_data *data);
 static int mxt_internal_resume(struct mxt_data *data);
 static uint8_t calibrate_chip(struct mxt_data *data);
 static int write_config(struct mxt_data *data, u8 type, const u8 *cfg);
+static int set_conifg_flip_cover(struct mxt_data *data, int enables);
 
 static void set_default_result(struct mxt_data *data)
 {
@@ -523,6 +526,28 @@ static void run_delta_read(void *device_data)
 	set_default_result(data);
 
 	status = read_all_delta_data(data, MXT_DELTA_MODE);
+
+	set_cmd_result(data, buff, strnlen(buff, sizeof(buff)));
+
+	data->cmd_state = 2;
+
+	dev_info(&data->client->dev, "%s\n", __func__);
+}
+
+static void flip_cover_enable(void *device_data)
+{
+	struct mxt_data *data = (struct mxt_data *)device_data;
+	int status = 0;
+	char buff[16] = {0};
+
+	set_default_result(data);
+
+	status = set_conifg_flip_cover(data, data->cmd_param[0]);
+
+	dev_info(&data->client->dev, "%s: flip_cover %s %s.\n",
+			__func__,
+			data->cmd_param ? "enable" : "disable", 
+			status == 0 ? "successed" : "failed");
 
 	set_cmd_result(data, buff, strnlen(buff, sizeof(buff)));
 
@@ -1084,29 +1109,39 @@ static void mxt_ta_cb(struct tsp_callbacks *cb, bool ta_status)
 
 	if (mxt_enabled) {
 		if (ta_status) {
-			write_config(data,
+			if (!data->flip_cover_status) {
+				write_config(data,
 					data->t62_config_chrg_s[0],
 					data->t62_config_chrg_s + 1);
 
-			   write_config(data,
-			   data->t46_config_chrg_s[0],
-			   data->t46_config_chrg_s + 1);
+				write_config(data,
+					data->t46_config_chrg_s[0],
+					data->t46_config_chrg_s + 1);
 
-		pr_info("[TSP]%s:threshold_chrg: %d, probe_num: %d\n",
-			__func__, data->tchthr_charging,
-					tsp_probe_num);
+				pr_info("[TSP]%s:threshold_chrg: %d, probe_num: %d\n",
+					__func__, data->tchthr_charging,
+						tsp_probe_num);
+			} else {
+				pr_info("[TSP]%s: flip cover enabled. do not change threshold\n",
+					__func__);
+			}
 		} else {
-			write_config(data,
-					data->t62_config_batt_s[0],
-					data->t62_config_batt_s + 1);
+			if (!data->flip_cover_status) {
+				write_config(data,
+						data->t62_config_batt_s[0],
+						data->t62_config_batt_s + 1);
 
-			write_config(data,
-			   data->t46_config_batt_s[0],
-			   data->t46_config_batt_s + 1);
+				write_config(data,
+						data->t46_config_batt_s[0],
+						data->t46_config_batt_s + 1);
 
-			pr_info("[TSP]%s:threshold_batt: %d, probe_num: %d\n",
-					__func__, data->tchthr_batt,
-					tsp_probe_num);
+				pr_info("[TSP]%s:threshold_batt: %d, probe_num: %d\n",
+						__func__, data->tchthr_batt,
+						tsp_probe_num);
+			} else {
+				pr_info("[TSP]%s: flip cover enabled. do not change threshold\n",
+					__func__);
+			}
 		}
 		calibrate_chip(data);
 	} else 
@@ -1267,6 +1302,11 @@ static int __devinit mxt_init_touch_driver(struct mxt_data *data)
 
 	ret = get_object_info(data, GEN_COMMANDPROCESSOR_T6, &dummy,
 					&data->cmd_proc);
+	if (ret)
+		goto err;
+
+	ret = get_object_info(data, PROCG_NOISESUPPRESSION_T62, &dummy,
+					&data->cmd_illumin);
 	if (ret)
 		goto err;
 
@@ -2007,7 +2047,6 @@ static void mxt_early_suspend(struct early_suspend *h)
 		pr_info("%s\n", __func__);
 		mxt_enabled = 0;
 		touch_is_pressed = 0;
-		irq_set_irq_wake(data->client->irq, 0);
 		disable_irq(data->client->irq);
 		mxt_internal_suspend(data);
 	} else
@@ -2465,6 +2504,26 @@ static ssize_t find_channel_show(struct device *dev,
 	return snprintf(buf, 10, "%u\n", status);
 }
 #endif
+
+static int set_conifg_flip_cover(struct mxt_data *data, int enables)
+{
+	u8 value;
+	int retval;
+
+	if (enables) {
+		value = (u8)data->tchthr_illuminance;
+		data->flip_cover_status = true;
+	} else {
+		if (data->ta_status)
+			value = (u8)data->tchthr_charging;
+		else
+			value = (u8)data->tchthr_batt;
+		data->flip_cover_status = false;
+	}
+	retval = write_mem(data, data->cmd_illumin + 35, 1, &value);
+
+	return retval;
+}
 
 static int mxt_check_bootloader(struct i2c_client *client,
 					unsigned int state)
@@ -3606,6 +3665,10 @@ static int __devinit mxt_probe(struct i2c_client *client,
 	while (init_retry < 3) {
 		ret = mxt_init_touch_driver(data);
 		if (ret) {
+			data->power_onoff(0);
+			msleep(30);
+			data->power_onoff(1);
+			msleep(70);
 			pr_err("[TSP] initialization error. retry...");
 			init_retry++;
 		} else
@@ -3615,6 +3678,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 /*!(FOR_BRINGUP)*/
 	if (ret) {
 		pr_err("[TSP] chip initialization failed\n");
+		data->callbacks.inform_charger = NULL;
 		goto err_init_drv;
 	}
 
@@ -3629,12 +3693,14 @@ static int __devinit mxt_probe(struct i2c_client *client,
 	data->t46_config_chrg_s = pdata->t46_config_chrg_s;
 	data->tchthr_batt = pdata->tchthr_batt;
 	data->tchthr_charging = pdata->tchthr_charging;
+	data->tchthr_illuminance = pdata->tchthr_illuminance;
 
 #if !(FOR_BRINGUP)
 		data->t62_config_batt = pdata->t62_config_batt;
 		data->t62_config_chrg = pdata->t62_config_chrg;
 		data->tchthr_batt = pdata->tchthr_batt;
 		data->tchthr_charging = pdata->tchthr_charging;
+		data->tchthr_illuminance = pdata->tchthr_illuminance;
 		data->calcfg_batt = pdata->calcfg_batt;
 		data->calcfg_charging = pdata->calcfg_charging;
 #endif

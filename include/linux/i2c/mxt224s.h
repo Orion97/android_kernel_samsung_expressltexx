@@ -88,6 +88,7 @@ struct mxt224s_platform_data {
 	int max_w;
 	u8 tchthr_batt;
 	u8 tchthr_charging;
+	u8 tchthr_illuminance;
 #if CHECK_ANTITOUCH
 	u8 check_antitouch;
 	u8 check_timer;
@@ -148,11 +149,13 @@ struct mxt_data {
 	u8 y_line;
 	u16 msg_proc;
 	u16 cmd_proc;
+	u16 cmd_illumin;
 	u16 msg_object_size;
 	u32 x_dropbits:2;
 	u32 y_dropbits:2;
 	u8 tchthr_batt;
 	u8 tchthr_charging;
+	u8 tchthr_illuminance;
 	u8 calcfg_batt;
 	u8 calcfg_charging;
 	u8 disable_config_write;
@@ -194,6 +197,7 @@ struct mxt_data {
 	void (*register_cb)(struct tsp_callbacks *);
 	int num_fingers;
 	const u8 *config_fw_version;
+	bool flip_cover_status;
 #if ITDEV
 	u16 last_read_addr;
 	u16 msg_proc_addr;

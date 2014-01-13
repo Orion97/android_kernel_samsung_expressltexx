@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/kmemleak.h>
 #include <linux/highmem.h>
+#include <linux/swap.h>
 
 #include "kgsl.h"
 #include "kgsl_sharedmem.h"
@@ -511,6 +512,7 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 	pgprot_t page_prot = pgprot_writecombine(PAGE_KERNEL);
 	void *ptr;
 	struct sysinfo si;
+	long cached;
 
 	/*
 	 * Get the current memory information to be used in deciding if we
@@ -519,13 +521,19 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 
 	si_meminfo(&si);
 
+	cached = global_page_state(NR_FILE_PAGES) -
+		total_swapcache_pages - si.bufferram;
+
 	/*
 	 * Don't let the user allocate more free memory then is available on the
 	 * system
 	 */
 
-	if (size >= (si.freeram << PAGE_SHIFT))
+	if (size >= ((si.freeram + cached) << PAGE_SHIFT)) {
+		KGSL_CORE_ERR("insufficient physical memory(%lu) / size(%u)\n",
+			(si.freeram + cached) << PAGE_SHIFT, size);
 		return -ENOMEM;
+	}
 
 	/*
 	 * Add guard page to the end of the allocation when the

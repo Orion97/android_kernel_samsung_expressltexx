@@ -1741,11 +1741,11 @@ static int isx012_set_preview(void)
 	if (isx012_ctrl->cam_mode == MOVIE_MODE) {
 		CAM_DEBUG(" ** Camcorder Mode");
 		ISX012_BURST_WRITE_LIST(isx012_Camcorder_Mode_ON);
-		ISX012_WRITE_LIST(isx012_Preview_Mode);
+		ISX012_WRITE_LIST(isx012_camcorder_Preview_Mode);
 		isx012_ctrl->op_mode = CAMERA_MODE_RECORDING;
 	} else {
 		CAM_DEBUG(" ** Preview Mode");
-		ISX012_WRITE_LIST(isx012_Preview_Mode);
+		ISX012_WRITE_LIST(isx012_camera_Preview_Mode);
 		isx012_ctrl->op_mode = CAMERA_MODE_PREVIEW;
 	}
 

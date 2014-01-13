@@ -1363,7 +1363,7 @@ free_card:
 	if (!oldcard)
 		mmc_remove_card(card);
 err:
-	msmsdcc_dump_sdcc_state(host);
+	msmsdcc_dump_sdcc_state(mmc_priv(host));
 	mmc_free_ext_csd(ext_csd);
 	BUG();
 	
@@ -1464,12 +1464,14 @@ static int mmc_suspend(struct mmc_host *host)
 	mmc_claim_host(host);
 	if (mmc_can_poweroff_notify(host->card))
 		err = mmc_poweroff_notify(host->card, EXT_CSD_POWER_OFF_SHORT);
+/* Disable CMD5 because of init fail on eMMC
 	else if (mmc_card_can_sleep(host)) {
 		if (!strcmp(mmc_hostname(host), "mmc0"))
 			mmc_switch(host->card, EXT_CSD_CMD_SET_NORMAL,
 				EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_1, 0);
 		err = mmc_card_sleep(host);
 	}
+*/	
 	else if (!mmc_host_is_spi(host)) {
 		if (!strcmp(mmc_hostname(host), "mmc0"))
 			mmc_switch(host->card, EXT_CSD_CMD_SET_NORMAL,
