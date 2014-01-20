@@ -359,7 +359,6 @@ struct pm8921_chg_chip {
 	int			wc_w_gpio;
 	int			wc_w_state;
 	int			wpc_acok;
-	int		cable_exception;
 
 	struct pm8921_sec_battery_data *batt_pdata;
 	struct pm8921_charger_platform_data *chg_pdata;
@@ -2576,17 +2575,10 @@ static int pm_batt_power_set_property(struct power_supply *psy,
 								batt_psy);
 	enum cable_type_t new_cable_type;
 	int batt_capacity;
-
-	if (!chip->dev) {
-		pr_err("called before init\n");
-		goto error_check;
-	}
-
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
 		/* cable is attached or detached. called by usb switch ic */
 
-		chip->cable_exception = CABLE_TYPE_NONE;
 		switch (val->intval) {
 		case POWER_SUPPLY_TYPE_BATTERY:
 #if defined(CONFIG_WIRELESS_CHARGING)
@@ -2663,8 +2655,6 @@ static int pm_batt_power_set_property(struct power_supply *psy,
 	default:
 		return -EINVAL;
 	}
-
-error_check:
 	return 0;
 }
 #endif
@@ -4069,16 +4059,9 @@ static irqreturn_t usbin_valid_irq_handler(int irq, void *data)
 	    handle_usb_insertion_removal(data);
 #endif
 
-	if (chip->cable_exception &&
-		is_usb_chg_plugged_in(data)) {
-		pr_debug("USBIN is recovered. start charging\n");
-		chip->cable_type = chip->cable_exception;
-		handle_cable_insertion_removal(data);
-	}
 	if (chip->charging_enabled && (!is_usb_chg_plugged_in(data))
 			&& !ovp_state) {
 		pr_debug("USBIN is gone. stop charging\n");
-		chip->cable_exception = chip->cable_type;
 		chip->cable_type = CABLE_TYPE_NONE;
 		handle_cable_insertion_removal(data);
 	}
@@ -6173,7 +6156,6 @@ static int __devinit pm8921_charger_probe(struct platform_device *pdev)
 	chip->recharging_cnt = 0;
 	chip->batt_present = 1;
 	chip->boot_completed = false;
-	chip->cable_exception = CABLE_TYPE_NONE;
 
 	wake_lock_init(&chip->monitor_wake_lock, WAKE_LOCK_SUSPEND,
 		       "sec-charger-monitor");

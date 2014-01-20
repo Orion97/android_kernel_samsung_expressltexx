@@ -38,7 +38,6 @@
 #define MXT224S_CHRGTIME_CHRG		60
 #define MXT224S_THRESHOLD_BATT		0x1E
 #define MXT224S_THRESHOLD_CHRG		0x28
-#define MXT224S_THRESHOLD_ILLUMIN	0x32
 #define MXT224S_CALCFG_BATT		210
 #define MXT224S_CALCFG_CHRG		210
 
@@ -338,7 +337,6 @@ struct mxt224s_platform_data mxt224s_data = {
 	.config_s = mxt224s_config,
 	.tchthr_batt = MXT224S_THRESHOLD_BATT,
 	.tchthr_charging = MXT224S_THRESHOLD_CHRG,
-	.tchthr_illuminance = MXT224S_THRESHOLD_ILLUMIN,
 	.t62_config_batt_s = t62_config_s,
 	.t62_config_chrg_s = t62_config_s_ta,
 	.t46_config_batt_s = t46_config_s,
