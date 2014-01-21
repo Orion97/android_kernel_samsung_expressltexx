@@ -78,6 +78,7 @@
 
 #define VDEC_EXTRADATA_EXT_DATA          0x0800
 #define VDEC_EXTRADATA_USER_DATA         0x1000
+#define VDEC_EXTRADATA_EXT_BUFFER        0x2000
 
 #define VDEC_CMDBASE	0x800
 #define VDEC_CMD_SET_INTF_VERSION	(VDEC_CMDBASE)
@@ -548,6 +549,9 @@ struct vdec_output_frameinfo {
 	struct vdec_framesize framesize;
 	enum vdec_interlaced_format interlaced_format;
 	struct vdec_aspectratioinfo aspect_ratio_info;
+        struct vdec_sep_metadatainfo metadata_info;
+        size_t metadata_len;
+        size_t metadata_offset;
 };
 
 union vdec_msgdata {
