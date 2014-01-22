@@ -41,7 +41,9 @@
 #include <linux/android_pmem.h>
 #include <linux/leds.h>
 #include <linux/pm_runtime.h>
-
+#include <linux/sync.h>
+#include <linux/sw_sync.h>
+#include <linux/file.h>
 #ifdef CONFIG_SEC_DEBUG
 #include <mach/sec_debug.h>
 #endif
@@ -123,6 +125,12 @@ static void msm_fb_scale_bl(__u32 *bl_lvl);
 
 #define MSM_FB_MAX_DBGFS 1024
 #define MAX_BACKLIGHT_BRIGHTNESS 255
+
+#define WAIT_FENCE_FIRST_TIMEOUT (3 * MSEC_PER_SEC)
+#define WAIT_FENCE_FINAL_TIMEOUT (10 * MSEC_PER_SEC)
+/* Display op timeout should be greater than total timeout */
+#define WAIT_DISP_OP_TIMEOUT (WAIT_FENCE_FIRST_TIMEOUT +\
+        WAIT_FENCE_FINAL_TIMEOUT) * MDP_MAX_FENCE_FD
 
 int msm_fb_debugfs_file_index;
 struct dentry *msm_fb_debugfs_root;
@@ -1735,6 +1743,36 @@ static int msm_fb_release(struct fb_info *info, int user)
 	return ret;
 }
 
+void msm_fb_wait_for_fence(struct msm_fb_data_type *mfd)
+{
+	int i, ret = 0;
+	/* buf sync */
+	for (i = 0; i < mfd->acq_fen_cnt; i++) {
+		ret = sync_fence_wait(mfd->acq_fen[i],
+				WAIT_FENCE_FIRST_TIMEOUT);
+		if (ret == -ETIME) {
+			pr_warn("%s: sync_fence_wait timed out!"
+				"Waiting %ld more seconds\n",
+				__func__,WAIT_FENCE_FINAL_TIMEOUT/MSEC_PER_SEC);
+			ret = sync_fence_wait(mfd->acq_fen[i],
+					WAIT_FENCE_FINAL_TIMEOUT);
+		}
+		if (ret < 0) {
+			pr_err("%s: sync_fence_wait failed! ret = %x\n",
+				__func__, ret);
+			break;
+		}
+		sync_fence_put(mfd->acq_fen[i]);
+	}
+	if (ret < 0) {
+		while (i < mfd->acq_fen_cnt) {
+			sync_fence_put(mfd->acq_fen[i]);
+			i++;
+		}
+	}
+	mfd->acq_fen_cnt = 0;
+}
+
 DEFINE_SEMAPHORE(msm_fb_pan_sem);
 
 static void bl_workqueue_handler(struct work_struct *work)
@@ -1830,7 +1868,7 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	mutex_unlock(&msm_fb_notify_update_sem);
 
 	down(&msm_fb_pan_sem);
-
+	msm_fb_wait_for_fence(mfd);
 	if (info->node == 0 && !(mfd->cont_splash_done)) { /* primary */
 		mdp_set_dma_pan_info(info, NULL, TRUE);
 		if (msm_fb_blank_sub(FB_BLANK_UNBLANK, info, mfd->op_enable)) {
@@ -3369,6 +3407,111 @@ static int msmfb_handle_pp_ioctl(struct msm_fb_data_type *mfd,
 
 	return ret;
 }
+static int msmfb_handle_buf_sync_ioctl(struct msm_fb_data_type *mfd,
+						struct mdp_buf_sync *buf_sync)
+{
+	int i, ret = 0;
+	u32 threshold;
+	int acq_fen_fd[MDP_MAX_FENCE_FD];
+	struct sync_fence *fence;
+
+	if ((buf_sync->acq_fen_fd_cnt > MDP_MAX_FENCE_FD) ||
+		(mfd->timeline == NULL))
+		return -EINVAL;
+
+	if ((!mfd->op_enable) || (!mfd->panel_power_on))
+		return -EPERM;
+
+	if (buf_sync->acq_fen_fd_cnt)
+		ret = copy_from_user(acq_fen_fd, buf_sync->acq_fen_fd,
+				buf_sync->acq_fen_fd_cnt * sizeof(int));
+	if (ret) {
+		pr_err("%s:copy_from_user failed", __func__);
+		return ret;
+	}
+	mutex_lock(&mfd->sync_mutex);
+	for (i = 0; i < buf_sync->acq_fen_fd_cnt; i++) {
+		fence = sync_fence_fdget(acq_fen_fd[i]);
+		if (fence == NULL) {
+			pr_info("%s: null fence! i=%d fd=%d\n", __func__, i,
+				acq_fen_fd[i]);
+			ret = -EINVAL;
+			break;
+		}
+		mfd->acq_fen[i] = fence;
+	}
+	mfd->acq_fen_cnt = i;
+	if (ret)
+		goto buf_sync_err_1;
+	if (buf_sync->flags & MDP_BUF_SYNC_FLAG_WAIT) {
+		msm_fb_wait_for_fence(mfd);
+	}
+	if (mfd->panel.type == WRITEBACK_PANEL)
+		threshold = 1;
+	else
+		threshold = 2;
+	mfd->cur_rel_sync_pt = sw_sync_pt_create(mfd->timeline,
+			mfd->timeline_value + threshold);
+	if (mfd->cur_rel_sync_pt == NULL) {
+		pr_err("%s: cannot create sync point", __func__);
+		ret = -ENOMEM;
+		goto buf_sync_err_1;
+	}
+	/* create fence */
+	mfd->cur_rel_fence = sync_fence_create("mdp-fence",
+			mfd->cur_rel_sync_pt);
+	if (mfd->cur_rel_fence == NULL) {
+		sync_pt_free(mfd->cur_rel_sync_pt);
+		mfd->cur_rel_sync_pt = NULL;
+		pr_err("%s: cannot create fence", __func__);
+		ret = -ENOMEM;
+		goto buf_sync_err_1;
+	}
+	/* create fd */
+	mfd->cur_rel_fen_fd = get_unused_fd_flags(0);
+	if (mfd->cur_rel_fen_fd < 0) {
+		pr_err("%s: get_unused_fd_flags failed", __func__);
+		ret  = -EIO;
+		goto buf_sync_err_2;
+	}
+	sync_fence_install(mfd->cur_rel_fence, mfd->cur_rel_fen_fd);
+	ret = copy_to_user(buf_sync->rel_fen_fd,
+		&mfd->cur_rel_fen_fd, sizeof(int));
+	if (ret) {
+		pr_err("%s:copy_to_user failed", __func__);
+		goto buf_sync_err_3;
+	}
+	mutex_unlock(&mfd->sync_mutex);
+	return ret;
+buf_sync_err_3:
+	put_unused_fd(mfd->cur_rel_fen_fd);
+buf_sync_err_2:
+	sync_fence_put(mfd->cur_rel_fence);
+	mfd->cur_rel_fence = NULL;
+	mfd->cur_rel_fen_fd = 0;
+buf_sync_err_1:
+	for (i = 0; i < mfd->acq_fen_cnt; i++)
+		sync_fence_put(mfd->acq_fen[i]);
+	mfd->acq_fen_cnt = 0;
+	mutex_unlock(&mfd->sync_mutex);
+	return ret;
+}
+
+static int msmfb_display_commit(struct fb_info *info,
+                                                unsigned long *argp)
+{
+        int ret;
+        struct mdp_display_commit disp_commit;
+        ret = copy_from_user(&disp_commit, argp,
+                        sizeof(disp_commit));
+        if (ret) {
+                pr_err("%s:copy_from_user failed", __func__);
+                return ret;
+        }
+
+        return ret;
+}
+
 static int msmfb_handle_metadata_ioctl(struct msm_fb_data_type *mfd,
 				struct msmfb_metadata *metadata_ptr)
 {
@@ -3404,6 +3547,7 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 #endif
 	struct mdp_page_protection fb_page_protection;
 	struct msmfb_mdp_pp mdp_pp;
+	struct mdp_buf_sync buf_sync;
 	struct msmfb_metadata mdp_metadata;
 	int ret = 0;
 
@@ -3690,6 +3834,20 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 
 		ret = msmfb_handle_pp_ioctl(mfd, &mdp_pp);
 		break;
+        case MSMFB_BUFFER_SYNC:
+                ret = copy_from_user(&buf_sync, argp, sizeof(buf_sync));
+                if (ret)
+                        return ret;
+
+                ret = msmfb_handle_buf_sync_ioctl(mfd, &buf_sync);
+
+                if (!ret)
+                        ret = copy_to_user(argp, &buf_sync, sizeof(buf_sync));
+                break;
+
+        case MSMFB_DISPLAY_COMMIT:
+                ret = msmfb_display_commit(info, argp);
+                break;
 
 	case MSMFB_METADATA_SET:
 		ret = copy_from_user(&mdp_metadata, argp, sizeof(mdp_metadata));

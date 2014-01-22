@@ -585,7 +585,8 @@ static u32 vcd_get_property_cmn
     (struct vcd_clnt_ctxt *cctxt,
      struct vcd_property_hdr *prop_hdr, void *prop_val)
 {
-	int rc;
+  	int rc = VCD_ERR_FAIL;
+  	u32 prop_handled = true;
 	VCD_MSG_LOW("vcd_get_property_cmn in %d:", cctxt->clnt_state.state);
 	VCD_MSG_LOW("property Id = %d", prop_hdr->prop_id);
 	if (!prop_hdr->sz || !prop_hdr->prop_id) {
