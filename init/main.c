@@ -79,6 +79,13 @@
 #include <asm/smp.h>
 #endif
 
+#include <linux/gpio.h>
+#include <mach/gpiomux.h>
+
+#ifdef CONFIG_SEC_GPIO_DVS
+#include <linux/secgpio_dvs.h>
+#endif
+
 static int kernel_init(void *);
 
 extern void init_IRQ(void);
@@ -112,11 +119,17 @@ int poweroff_charging;
 #endif /*  CONFIG_SAMSUNG_LPM_MODE */
 
 #ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
-#define USB_STRING_MAX	31
+#define USB_STRING_MAX        31
 char usb_string_temp[USB_STRING_MAX];
 char usb_string_name[USB_STRING_MAX + 1];
 EXPORT_SYMBOL(usb_string_name);
 #endif /* CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE */
+
+#ifdef CONFIG_FB_MSM_LOGO
+bool use_frame_buffer = 1;
+#else
+bool use_frame_buffer = 0;
+#endif
 
 /*
  * Boot command-line arguments
@@ -416,17 +429,16 @@ static int __init do_early_param(char *param, char *val)
 #ifdef CONFIG_SAMSUNG_LPM_MODE
 	/*  check power off charging */
 	if ((strncmp(param, "androidboot.bootchg", 19) == 0)) {
-		if (strncmp(val, "true", 4) == 0)
+		if (strncmp(val, "true", 4) == 0) {
 			poweroff_charging = 1;
+			use_frame_buffer = 1;
+		}
 	}
 #endif
+	if ((strncmp(param, "androidboot.boot_recovery", 25) == 0))
+		if (strncmp(val, "1", 1) == 0)
+			use_frame_buffer = 1;
 
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
-	if ((strncmp(param, "samsung.hardware", 16) == 0)) {
-		strlcpy(usb_string_temp, val, USB_STRING_MAX);
-		sprintf(usb_string_name, "_%s", usb_string_temp);
-	}
-#endif
 	return 0;
 }
 
@@ -502,11 +514,6 @@ asmlinkage void __init start_kernel(void)
 	smp_setup_processor_id();
 	debug_objects_early_init();
 
-	/*
-	 * Set up the the initial canary ASAP:
-	 */
-	boot_init_stack_canary();
-
 	cgroup_init_early();
 
 	local_irq_disable();
@@ -521,6 +528,10 @@ asmlinkage void __init start_kernel(void)
 	page_address_init();
 	printk(KERN_NOTICE "%s", linux_banner);
 	setup_arch(&command_line);
+	/*
+	 * Set up the the initial canary ASAP:
+	 */
+	boot_init_stack_canary();
 	mm_init_owner(&init_mm, &init_task);
 	mm_init_cpumask(&init_mm);
 	setup_command_line(command_line);
@@ -827,6 +838,14 @@ static void run_init_process(const char *init_filename)
  */
 static noinline int init_post(void)
 {
+#ifdef CONFIG_SEC_GPIO_DVS
+	/************************ Caution !!! ****************************/
+	/* This function must be located in appropriate INIT position
+	 * in accordance with the specification of each BB vendor.
+	 */
+	/************************ Caution !!! ****************************/
+	gpio_dvs_check_initgpio();
+#endif
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
 	free_initmem();
@@ -914,6 +933,16 @@ static int __init kernel_init(void * unused)
 	 * we're essentially up and running. Get rid of the
 	 * initmem segments and start the user-mode stuff..
 	 */
+	#if defined(CONFIG_MACH_SERRANO_SPR)
+	gpio_tlmm_config(GPIO_CFG(51, 0, GPIO_CFG_INPUT,
+		GPIO_CFG_NO_PULL, GPIO_CFG_16MA), GPIO_CFG_ENABLE);
+	gpio_tlmm_config(GPIO_CFG(52, 0, GPIO_CFG_INPUT,
+		GPIO_CFG_NO_PULL, GPIO_CFG_16MA), GPIO_CFG_ENABLE);
+	gpio_tlmm_config(GPIO_CFG(68, 0, GPIO_CFG_INPUT,
+		 GPIO_CFG_NO_PULL, GPIO_CFG_2MA), 1);
+	gpio_tlmm_config(GPIO_CFG(69,  0, GPIO_CFG_INPUT,
+		 GPIO_CFG_NO_PULL, GPIO_CFG_2MA), 1);
+	#endif
 
 	init_post();
 	return 0;

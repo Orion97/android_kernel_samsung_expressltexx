@@ -24,10 +24,6 @@
 #include <linux/irq.h>
 #include <asm/system.h>
 
-#if defined(CONFIG_FB_MSM_MIPI_NOVATEK_BOE_CMD_WVGA_PT)
-#include <asm/cacheflush.h>
-#endif
-
 #define fb_width(fb)	((fb)->var.xres)
 #define fb_height(fb)	((fb)->var.yres)
 #define fb_size(fb)	((fb)->var.xres * (fb)->var.yres * 2)
@@ -39,7 +35,6 @@ static void memset16(void *_ptr, unsigned short val, unsigned count)
 	while (count--)
 		*ptr++ = val;
 }
-
 
 /* convert RGB565 to RBG8888 */
 static int total_pixel = 1;
@@ -94,7 +89,6 @@ int load_565rle_image(char *filename, bool bf_supported)
 			__func__);
 		return -ENODEV;
 	}
-
 #ifndef CONFIG_FRAMEBUFFER_CONSOLE
 	owner = info->fbops->owner;
 	if (!try_module_get(owner))
@@ -136,45 +130,34 @@ int load_565rle_image(char *filename, bool bf_supported)
 		       __func__, __LINE__, info->node);
 		goto err_logo_free_data;
 	}
-	bits = (unsigned short *)(info->screen_base);
-	while (count > 3) {
-		unsigned n = ptr[0];
-		if (n > max)
-			break;
-		if (info->var.bits_per_pixel >= 24) {
-			pad = memset16_rgb8888(bits, ptr[1], n << 1, info);
-			bits += n << 1;
-			bits += pad;
-		} else {
-		memset16(bits, ptr[1], n << 1);
-		bits += n;
+	if (info->screen_base) {
+		bits = (unsigned short *)(info->screen_base);
+		while (count > 3) {
+			unsigned n = ptr[0];
+			if (n > max)
+				break;
+			if (info->var.bits_per_pixel >= 24) {
+				pad = memset16_rgb8888(bits, ptr[1], n << 1, info);
+				bits += n << 1;
+				bits += pad;
+			} else {
+			memset16(bits, ptr[1], n << 1);
+			bits += n;
+			}
+			max -= n;
+			ptr += 2;
+			count -= 4;
 		}
-		max -= n;
-		ptr += 2;
-		count -= 4;
 	}
-#if defined(CONFIG_FB_MSM_MIPI_NOVATEK_BOE_CMD_WVGA_PT)
-	flush_cache_all();
-	outer_flush_all();
-#endif
-
+	err = 0;
 err_logo_free_data:
 	kfree(data);
 err_logo_close_file:
 	sys_close(fd);
-
-#ifndef CONFIG_FRAMEBUFFER_CONSOLE
-	err = fb_pan_display(info, &info->var);
-	if (err < 0) {
-		printk(KERN_WARNING "%s: Can not update framebuffer\n",
-			__func__);
-		return -ENODEV;
-	}
-#endif
-
 	return err;
 }
 EXPORT_SYMBOL(load_565rle_image);
+#define CONFIG_FRAMEBUFFER_CONSOLE
 
 int draw_rgb888_screen(void)
 {
@@ -182,18 +165,21 @@ int draw_rgb888_screen(void)
 	u32 height = fb->var.yres / 5;
 	u32 line = fb->fix.line_length;
 	u32 i, j;
-	struct module *owner;
-	int err = 0;
-	printk(KERN_WARNING "%s\n", __func__);
+#ifndef CONFIG_FRAMEBUFFER_CONSOLE
+		struct module *owner;
+#endif
 
-	owner = fb->fbops->owner;
-	if (!try_module_get(owner))
-		return -ENODEV;
-	if (fb->fbops->fb_open && fb->fbops->fb_open(fb, 0)) {
-		module_put(owner);
-		return -ENODEV;
-	}
+	pr_info( "##############%s\n", __func__);
 
+#ifndef CONFIG_FRAMEBUFFER_CONSOLE
+		owner = fb->fbops->owner;
+		if (!try_module_get(owner))
+			return -ENODEV;
+		if (fb->fbops->fb_open && fb->fbops->fb_open(fb, 0)) {
+			module_put(owner);
+			return -ENODEV;
+		}
+#endif
 	for (i = 0; i < height; i++) {
 		for (j = 0; j < fb->var.xres; j++) {
 			memset(fb->screen_base + i * line + j * 4 + 0, 0xff, 1);
@@ -243,15 +229,6 @@ int draw_rgb888_screen(void)
 		flush_cache_all();
 		outer_flush_all();
 #endif
-
-
-	err = fb_pan_display(fb, &fb->var);
-	if (err < 0) {
-		printk(KERN_WARNING "%s: Can not update framebuffer\n",
-			__func__);
-		return -ENODEV;
-	}
-
 	return 0;
 }
 EXPORT_SYMBOL(draw_rgb888_screen);

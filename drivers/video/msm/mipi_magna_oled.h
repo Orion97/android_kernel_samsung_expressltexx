@@ -181,6 +181,7 @@ void reset_gamma_level(void);
 unsigned char bypass_LCD_Id(void);
 
 extern boolean is_acl_on;
+extern struct mutex dsi_tx_mutex;
 
 
 #endif  /* MIPI_SAMSUNG_OLED_H */

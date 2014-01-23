@@ -82,7 +82,6 @@ struct msm_fb_data_type {
 	DISP_TARGET dest;
 	struct fb_info *fbi;
 
-	struct delayed_work backlight_worker;
 	struct device *dev;
 	boolean op_enable;
 #ifdef CONFIG_BACKLIGHT_WORKQUEUE
@@ -253,8 +252,7 @@ void msm_fb_release_timeline(struct msm_fb_data_type *mfd);
 void msm_fb_config_backlight(struct msm_fb_data_type *mfd);
 #endif
 
-void fill_black_screen(void);
-void unfill_black_screen(void);
+void fill_black_screen(bool on, uint8 pipe_num, uint8 mixer_num);
 int msm_fb_check_frame_rate(struct msm_fb_data_type *mfd,
 				struct fb_info *info);
 

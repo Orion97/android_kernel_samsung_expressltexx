@@ -109,7 +109,7 @@ static char eot_check_disable[] = {
 
 static char display_control_set[] = {
 	0xF2,
-	0x02, 0x03, 0x69, 0x10, 0x10,
+	0x02, 0x06, 0xA, 0x20, 0x50,
 };
 static char gtcon_control[] = {
 	0xf7,
@@ -215,8 +215,10 @@ static struct dsi_cmd_desc samsung_panel_on_cmds[] = {
 };
 
 static struct dsi_cmd_desc samsung_panel_off_cmds[] = {
-	{DTYPE_DCS_LWRITE, 1, 0, 0, 0,
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 10,
 		sizeof(sleep_in), sleep_in},
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 0,
+		sizeof(all_pixel_off), all_pixel_off},
 };
 
 static struct dsi_cmd_desc samsung_panel_late_on_cmds[] = {
@@ -660,10 +662,10 @@ static int __init mipi_video_magna_oled_wvga_pt_init(void)
 	pinfo.bpp = 24;
 	pinfo.lcdc.h_pulse_width = 4;
 	pinfo.lcdc.h_back_porch = 16;
-	pinfo.lcdc.h_front_porch = 16;
+	pinfo.lcdc.h_front_porch = 80;
 	pinfo.lcdc.v_pulse_width = 2;
 	pinfo.lcdc.v_back_porch = 4;
-	pinfo.lcdc.v_front_porch = 105;
+	pinfo.lcdc.v_front_porch = 10;
 	pinfo.lcdc.border_clr = 0;	/* blk */
 	pinfo.lcdc.underflow_clr = 0xff;/* blue */
 	pinfo.lcdc.hsync_skew = 0;

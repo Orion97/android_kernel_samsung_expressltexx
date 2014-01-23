@@ -39,7 +39,11 @@
 #define INDEX_OFFSET 1
 
 #define DIMMING_BL (20)
+#if defined(CONFIG_MACH_CANE)
+#define DISP_BL_CONT_GPIO 7
+#else
 #define DISP_BL_CONT_GPIO 10
+#endif
 
 /*#define USE_READ_ID*/
 enum mipi_samsung_cmd_list {
@@ -50,12 +54,9 @@ enum mipi_samsung_cmd_list {
 	PANEL_LATE_ON,
 	PANEL_EARLY_OFF,
 	PANEL_GAMMA_UPDATE,
-	PANEL_ELVSS_UPDATE,
-	PANEL_ACL_ON,
-	PANEL_ACL_OFF,
-	PANEL_ACL_UPDATE,
 	MTP_READ_ENABLE,
 	PANEL_BRIGHT_CTRL,
+	PANEL_TUNE_CTRL,
 };
 
 enum gamma_mode_list {
@@ -90,6 +91,7 @@ struct mipi_panel_data {
 	struct cmd_set late_on;
 	struct cmd_set early_off;
 	struct cmd_set mtp_read_enable;
+	struct cmd_set tune;
 
 	/*struct str_smart_dim smart;*/
 	signed char lcd_current_cd_idx;
@@ -134,5 +136,12 @@ int mipi_samsung_device_register(struct msm_panel_info *pinfo,
 
 void reset_gamma_level(void);
 unsigned char bypass_LCD_Id(void);
+
+#if defined(CONFIG_BACKLIGHT_IC_KTD253)
+void ktd253_set_brightness(int level);
+#define MAX_BRIGHTNESS_IN_BLU	32
+#endif
+
+extern struct mutex dsi_tx_mutex;
 
 #endif  /* MIPI_SAMSUNG_OLED_H */

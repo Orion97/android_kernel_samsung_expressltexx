@@ -215,17 +215,17 @@ struct vdec_ioctl_msg {
 	_IOR(VDEC_IOCTL_MAGIC, 38, struct vdec_ioctl_msg)
 
 #define VDEC_IOCTL_SET_META_BUFFERS \
-        _IOW(VDEC_IOCTL_MAGIC, 39, struct vdec_ioctl_msg)
+	_IOW(VDEC_IOCTL_MAGIC, 39, struct vdec_ioctl_msg)
 
 #define VDEC_IOCTL_FREE_META_BUFFERS \
-        _IO(VDEC_IOCTL_MAGIC, 40)
+	_IO(VDEC_IOCTL_MAGIC, 40)
 
 #define VDEC_IOCTL_GET_ENABLE_SEC_METADATA \
-        _IOR(VDEC_IOCTL_MAGIC, 41, struct vdec_ioctl_msg)
+	_IOR(VDEC_IOCTL_MAGIC, 41, struct vdec_ioctl_msg)
 
 /*IOCTL params:GET: InputData - NULL, OutputData - unsigned int.*/
 #define VDEC_IOCTL_GET_PERF_LEVEL \
-  _IOR(VDEC_IOCTL_MAGIC, 42, struct vdec_ioctl_msg)
+	_IOR(VDEC_IOCTL_MAGIC, 42, struct vdec_ioctl_msg)
 
 enum vdec_picture {
 	PICTURE_TYPE_I,
@@ -250,7 +250,7 @@ struct vdec_allocatorproperty {
 	size_t buffer_size;
 	uint32_t alignment;
 	uint32_t buf_poolid;
-        size_t meta_buffer_size;
+	size_t meta_buffer_size;
 };
 
 struct vdec_bufferpayload {
@@ -542,8 +542,8 @@ struct vdec_aspectratioinfo {
 };
 
 struct vdec_sep_metadatainfo {
-        void __user *metabufaddr;
-        uint32_t size;
+	void __user *metabufaddr;
+	uint32_t size;
 };
 
 struct vdec_output_frameinfo {
@@ -558,9 +558,9 @@ struct vdec_output_frameinfo {
 	struct vdec_framesize framesize;
 	enum vdec_interlaced_format interlaced_format;
 	struct vdec_aspectratioinfo aspect_ratio_info;
-        struct vdec_sep_metadatainfo metadata_info;
-        size_t metadata_len;
-        size_t metadata_offset;
+	struct vdec_sep_metadatainfo metadata_info;
+	size_t metadata_len;
+	size_t metadata_offset;
 };
 
 union vdec_msgdata {
@@ -592,6 +592,14 @@ struct vdec_mv_buff_size{
 	int height;
 	int size;
 	int alignment;
+};
+
+struct vdec_meta_buffers {
+	size_t size;
+	int count;
+	int pmem_fd;
+	int pmem_fd_iommu;
+	int offset;
 };
 
 #endif /* end of macro _VDECDECODER_H_ */

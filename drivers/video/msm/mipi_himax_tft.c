@@ -16,9 +16,18 @@
 #include <mach/msm8930-gpio.h>
 #include "mipi_himax_tft.h"
 #include "mdp4.h"
-#if defined(CONFIG_FB_MSM_MIPI_HIMAX_TFT_VIDEO_HD_PT)
+
+#if defined(CONFIG_FB_MDP4_ENHANCE)
 #include "mdp4_video_enhance.h"
+#elif defined(CONFIG_MDNIE_LITE_TUNING)
+#include "mdnie_lite_tuning.h"
 #endif
+
+#define DDI_VIDEO_ENHANCE_TUNING /*for HX8369B*/
+#if defined(DDI_VIDEO_ENHANCE_TUNING)
+#include <linux/syscalls.h>
+#endif
+
 #define USE_READ_ID
 static struct mipi_samsung_driver_data msd;
 static unsigned int recovery_boot_mode;
@@ -26,17 +35,34 @@ static unsigned int recovery_boot_mode;
 #define WA_FOR_FACTORY_MODE
 #define READ_MTP_ONCE
 
-int is_lcd_connected = 1;
+struct dsi_buf mdnie_tune_tx_buf;
 
+int is_lcd_connected = 1;
+struct mutex dsi_tx_mutex;
+
+
+#if defined(CONFIG_BACKLIGHT_IC_KTD253)
+spinlock_t bl_ctrl_lock;
+static int lcd_brightness = -1;
+#endif
+
+#if defined(CONFIG_ESD_ERR_FG_RECOVERY)
+struct work_struct  err_fg_work;
+static int err_fg_gpio;	/* GPIO 19 */
+static int esd_count;
+static int err_fg_working;
+#endif
+
+#ifdef __HIMAX8394A__
 static char WRDISBV[] = {
 	0x51,
 	0xC3
 };
-
 static struct dsi_cmd_desc himax_video_backlight_cmds[] = {
 	{DTYPE_DCS_LWRITE, 1, 0, 0, 1,
 		sizeof(WRDISBV), WRDISBV},
 };
+#endif
 
 #ifdef USE_READ_ID
 static char manufacture_id1[2] = {0xDA, 0x00}; /* DTYPE_DCS_READ */
@@ -50,7 +76,55 @@ static struct dsi_cmd_desc samsung_manufacture_id2_cmd = {
 static struct dsi_cmd_desc samsung_manufacture_id3_cmd = {
 	DTYPE_DCS_READ, 1, 0, 1, 5, sizeof(manufacture_id3), manufacture_id3};
 
+#if 1
+static uint32 mipi_samsung_manufacture_id(struct msm_fb_data_type *mfd)
+{
+	struct dsi_buf *rp, *tp;
+	struct dsi_cmd_desc *cmd;
+	uint32 id;
 
+	mutex_lock(&dsi_tx_mutex);
+
+	tp = &msd.samsung_tx_buf;
+	rp = &msd.samsung_rx_buf;
+	mipi_dsi_buf_init(rp);
+	mipi_dsi_buf_init(tp);
+
+	cmd = &samsung_manufacture_id1_cmd;
+	mipi_dsi_cmds_rx(mfd, tp, rp, cmd, 1);
+	pr_info("%s: manufacture_id1=%x\n", __func__, *rp->data);
+	id = *((uint8 *)rp->data);
+	id <<= 8;
+
+	mipi_dsi_buf_init(rp);
+	mipi_dsi_buf_init(tp);
+	cmd = &samsung_manufacture_id2_cmd;
+	mipi_dsi_cmds_rx(mfd, tp, rp, cmd, 1);
+	pr_info("%s: manufacture_id2=%x\n", __func__, *rp->data);
+	id |= *((uint8 *)rp->data);
+	id <<= 8;
+
+	mipi_dsi_buf_init(rp);
+	mipi_dsi_buf_init(tp);
+	cmd = &samsung_manufacture_id3_cmd;
+	mipi_dsi_cmds_rx(mfd, tp, rp, cmd, 1);
+	pr_info("%s: manufacture_id3=%x\n", __func__, *rp->data);
+	id |= *((uint8 *)rp->data);
+
+	pr_info("%s: manufacture_id=%x\n", __func__, id);
+
+#ifdef FACTORY_TEST
+	if (id == 0x00) {
+		pr_info("Lcd is not connected\n");
+		is_lcd_connected = 0;
+	}
+#endif
+	mutex_unlock(&dsi_tx_mutex);
+
+	return id;
+}
+
+#else
 static uint32 mipi_samsung_manufacture_id(struct msm_fb_data_type *mfd)
 {
 	struct dsi_buf *rp, *tp;
@@ -101,38 +175,99 @@ static uint32 mipi_samsung_manufacture_id(struct msm_fb_data_type *mfd)
 	return id;
 }
 #endif
+#endif
 
+static char SETCHESEL[] = {
+	0xE6,
+	0x01,
+};
 
+static char SETCHEMODE_DYN[] = {
+	0xE4,
+	0x22,
+};
+static char SETCHEMODE_DYN_UI[] = {
+	0xE4,
+	0x02,
+};
+
+static struct dsi_cmd_desc samsung_display_mode_cmds[] = {
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 0,
+		sizeof(SETCHESEL), SETCHESEL},
+
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 0,
+		sizeof(SETCHEMODE_DYN), SETCHEMODE_DYN},
+
+};
+
+static struct dsi_cmd_desc samsung_display_mode_cmds_ui[] = {
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 0,
+		sizeof(SETCHESEL), SETCHESEL},
+
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 0,
+		sizeof(SETCHEMODE_DYN_UI), SETCHEMODE_DYN_UI},
+
+};
+
+void mipi_samsung_tune_mode(int mode)
+{
+	struct msm_fb_data_type *mfd;
+	struct dcs_cmd_req cmdreq;
+
+	pr_info("send tuning cmd mode(%d)!!\n", mode);
+
+	mfd = (struct msm_fb_data_type *) registered_fb[0]->par;
+
+	mutex_lock(&dsi_tx_mutex);
+
+	if (mode){
+
+		cmdreq.cmds = samsung_display_mode_cmds_ui;
+		cmdreq.cmds_cnt = ARRAY_SIZE(samsung_display_mode_cmds_ui);
+		cmdreq.flags = CMD_REQ_COMMIT;
+		cmdreq.rlen = 0;
+		cmdreq.cb = NULL;
+
+		mipi_dsi_cmdlist_put(&cmdreq);
+	}
+	else{
+
+		cmdreq.cmds = samsung_display_mode_cmds;
+		cmdreq.cmds_cnt = ARRAY_SIZE(samsung_display_mode_cmds);
+		cmdreq.flags = CMD_REQ_COMMIT;
+		cmdreq.rlen = 0;
+		cmdreq.cb = NULL;
+
+		mipi_dsi_cmdlist_put(&cmdreq);
+
+	}
+	mutex_unlock(&dsi_tx_mutex);
+
+}
 
 static int mipi_samsung_disp_send_cmd(struct msm_fb_data_type *mfd,
 				       enum mipi_samsung_cmd_list cmd,
 				       unsigned char lock)
 {
 	struct dsi_cmd_desc *cmd_desc;
+	struct dcs_cmd_req cmdreq;
 	int cmd_size = 0;
 
 /*	wake_lock(&idle_wake_lock);*//*temp*/
 
-	if (lock)
-		mutex_lock(&mfd->dma->ov_mutex);
+	if (mfd->panel.type == MIPI_VIDEO_PANEL)
+		mutex_lock(&dsi_tx_mutex);
+	else {
+		if (lock)
+			mutex_lock(&mfd->dma->ov_mutex);
+	}
+
 	pr_info("%s cmd = 0x%x\n", __func__, cmd);
 
 	switch (cmd) {
-	case PANEL_READY_TO_ON:
-#if CONFIG_MACH_GODIVA
-		if (system_rev < BOARD_REV05) {
-			cmd_desc = msd.mpd->ready_to_on.cmd;
-			cmd_size = msd.mpd->ready_to_on.size;
-		} else {
-#else
-		if (system_rev < BOARD_REV09) {
-			cmd_desc = msd.mpd->ready_to_on.cmd;
-			cmd_size = msd.mpd->ready_to_on.size;
-		} else {
-#endif
-			cmd_desc = msd.mpd->ready_to_on_t05.cmd;
-			cmd_size = msd.mpd->ready_to_on_t05.size;
-		}
+	case PANEL_READY_TO_ON: /*work*/
+		cmd_desc = msd.mpd->ready_to_on.cmd;
+		cmd_size = msd.mpd->ready_to_on.size;
 		break;
 	case PANEL_READY_TO_OFF:
 		cmd_desc = msd.mpd->ready_to_off.cmd;
@@ -158,7 +293,12 @@ static int mipi_samsung_disp_send_cmd(struct msm_fb_data_type *mfd,
 		cmd_desc = msd.mpd->mtp_read_enable.cmd;
 		cmd_size = msd.mpd->mtp_read_enable.size;
 		break;
-
+/*
+	case PANEL_TUNE_CTRL:
+		cmd_desc = msd.mpd->tune.cmd;
+		cmd_size = msd.mpd->tune.size;
+		break;
+*/
 	default:
 		goto unknown_command;
 		;
@@ -167,45 +307,45 @@ static int mipi_samsung_disp_send_cmd(struct msm_fb_data_type *mfd,
 	if (!cmd_size)
 		goto unknown_command;
 
-	if (lock) {
+		cmdreq.cmds = cmd_desc;
+		cmdreq.cmds_cnt = cmd_size;
+		cmdreq.flags = CMD_REQ_COMMIT;
+		cmdreq.rlen = 0;
+		cmdreq.cb = NULL;
+		mipi_dsi_cmdlist_put(&cmdreq);
 
-		mipi_dsi_mdp_busy_wait();
-		/* Added to resolved cmd loss during dimming factory test */
-		mdelay(1);
-
-		mipi_dsi_cmds_tx(&msd.samsung_tx_buf, cmd_desc, cmd_size);
-
-		mutex_unlock(&mfd->dma->ov_mutex);
-	} else {
-
-		mipi_dsi_mdp_busy_wait();
-		/* Added to resolved cmd loss during dimming factory test */
-		mdelay(1);
-		mipi_dsi_cmds_tx(&msd.samsung_tx_buf, cmd_desc, cmd_size);
+	if (mfd->panel.type == MIPI_VIDEO_PANEL)
+		mutex_unlock(&dsi_tx_mutex);
+	else {
+		if (lock)
+			mutex_unlock(&mfd->dma->ov_mutex);
 	}
-
-/*	wake_unlock(&idle_wake_lock);*//*temp*/
 
 	return 0;
 
 unknown_command:
-	if (lock)
-		mutex_unlock(&mfd->dma->ov_mutex);
-
-/*	wake_unlock(&idle_wake_lock);*//*temp*/
+	if (mfd->panel.type == MIPI_VIDEO_PANEL)
+		mutex_unlock(&dsi_tx_mutex);
+	else {
+		if (lock)
+			mutex_unlock(&mfd->dma->ov_mutex);
+	}
 
 	return 0;
 }
 
 static unsigned char first_on;
 
-
+extern void dumpreg(int );
 static int mipi_samsung_disp_on(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd;
 	struct mipi_panel_info *mipi;
 	static int boot_on;
 
+#ifdef __DEBUG__
+	static int test=0 ;
+#endif
 
 	mfd = platform_get_drvdata(pdev);
 	if (unlikely(!mfd))
@@ -221,16 +361,37 @@ static int mipi_samsung_disp_on(struct platform_device *pdev)
 		boot_on = 1;
 		/*Display was initialized in bootloader,same settings
 			are carried when splash is enabled*/
-		return 0;
 		}
 #endif
+
+#if defined(CONFIG_FB_MDP4_ENHANCE)
 	is_negativeMode_on();
+#endif
+
+#ifdef __DEBUG__
+	if(test==0)
+        if(0)
+	dumpreg(1);
+		test++;
+#endif		
+
 	mipi_samsung_disp_send_cmd(mfd, PANEL_READY_TO_ON, false);
-	pr_debug("%s: DISP_BL_CONT_GPIO High\n", __func__);
+
+#if defined(CONFIG_ESD_ERR_FG_RECOVERY)
+	enable_irq(err_fg_gpio);
+#endif
+
+#ifndef CONFIG_MACH_CANE_EUR_3G
+	pr_info("%s: DISP_BL_CONT_GPIO High\n", __func__);
 	gpio_set_value(DISP_BL_CONT_GPIO, 1);
+#endif	
 
 #if !defined(CONFIG_HAS_EARLYSUSPEND)
 	mipi_samsung_disp_send_cmd(mfd, PANEL_LATE_ON, false);
+#endif
+
+#if defined(CONFIG_MACH_CANE_EUR_3G)
+	mfd->resume_state = MIPI_RESUME_STATE;
 #endif
 
 	return 0;
@@ -240,15 +401,28 @@ static int mipi_samsung_disp_off(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd;
 	mfd = platform_get_drvdata(pdev);
+
+#if defined(CONFIG_ESD_ERR_FG_RECOVERY)
+	if (!err_fg_working) {
+		disable_irq_nosync(err_fg_gpio);
+		cancel_work_sync(&err_fg_work);
+	}
+#endif
+
 	if (unlikely(!mfd))
 		return -ENODEV;
 	if (unlikely(mfd->key != MFD_KEY))
 		return -EINVAL;
-	pr_debug("%s: DISP_BL_CONT_GPIO low\n", __func__);
+	pr_debug("%s: DISP_BL_CONT_GPIO low-block\n", __func__);
+
+#if !defined(CONFIG_ESD_ERR_FG_RECOVERY)
 	gpio_set_value(DISP_BL_CONT_GPIO, 0);
+#endif
 
 	mipi_samsung_disp_send_cmd(mfd, PANEL_READY_TO_OFF, false);
 	mipi_samsung_disp_send_cmd(mfd, PANEL_OFF, false);
+
+	mfd->resume_state = MIPI_SUSPEND_STATE;
 
 	return 0;
 }
@@ -270,6 +444,9 @@ static void __devinit mipi_samsung_disp_shutdown(struct platform_device *pdev)
 static void mipi_samsung_disp_backlight(struct msm_fb_data_type *mfd)
 {
 	struct mipi_panel_info *mipi;
+#ifndef CONFIG_BACKLIGHT_IC_KTD253
+	struct dcs_cmd_req cmdreq;
+#endif	
 	static int bl_level_old;
 
 	pr_info("%s Back light level:%d\n", __func__, mfd->bl_level);
@@ -279,24 +456,87 @@ static void mipi_samsung_disp_backlight(struct msm_fb_data_type *mfd)
 		goto end;
 	if (!msd.mpd->set_brightness_level ||  !mfd->panel_power_on)
 		goto end;
-	mutex_lock(&mfd->dma->ov_mutex);
+
+#if defined(CONFIG_BACKLIGHT_IC_KTD253)
+
+	ktd253_set_brightness(msd.mpd->set_brightness_level(mfd->bl_level));
+	bl_level_old = mfd->bl_level;
+
+#else /*for himax ldi HX8394-A*/
+	mutex_lock(&dsi_tx_mutex);
 	/* mdp4_dsi_cmd_busy_wait: will turn on dsi clock also */
 	mipi_dsi_mdp_busy_wait();
 
 	WRDISBV[1] = (unsigned char)
 		(msd.mpd->set_brightness_level(mfd->bl_level));
 
-	mipi_dsi_cmds_tx(&msd.samsung_tx_buf, himax_video_backlight_cmds,
-		ARRAY_SIZE(himax_video_backlight_cmds));
+	cmdreq.cmds = himax_video_backlight_cmds;
+	cmdreq.cmds_cnt = ARRAY_SIZE(himax_video_backlight_cmds);
+	cmdreq.flags = CMD_REQ_COMMIT;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mipi_dsi_cmdlist_put(&cmdreq);
 
 	bl_level_old = mfd->bl_level;
-	mutex_unlock(&mfd->dma->ov_mutex);
+	mutex_unlock(&dsi_tx_mutex);
+#endif
 
 end:
 	return;
+	
 }
 
+#if defined(CONFIG_BACKLIGHT_IC_KTD253)
 
+void ktd253_set_brightness(int level)
+{
+	int pulse;
+	int tune_level = 0;
+
+	spin_lock(&bl_ctrl_lock);	
+	tune_level = level;
+
+	pr_debug("[KTD253] tune_level : %d, lcd_brightness : %d \n",tune_level,lcd_brightness);	
+	if(tune_level != lcd_brightness)
+	{
+		if (!tune_level) {
+			gpio_set_value(DISP_BL_CONT_GPIO, 0);
+			mdelay(3);
+			lcd_brightness = tune_level;
+		} else {
+			if (unlikely(lcd_brightness < 0)) {
+				int val = gpio_get_value(DISP_BL_CONT_GPIO);
+				if (val) {
+					lcd_brightness = 0;
+				gpio_set_value(DISP_BL_CONT_GPIO, 0);
+				mdelay(3);
+					pr_info("LCD Baklight init in boot time on kernel\n");
+				}
+			}
+			if (!lcd_brightness) {
+				gpio_set_value(DISP_BL_CONT_GPIO, 1);
+				udelay(3);
+				lcd_brightness = 1;
+			}
+
+			pulse = (tune_level - lcd_brightness + MAX_BRIGHTNESS_IN_BLU)
+							% MAX_BRIGHTNESS_IN_BLU;
+
+			for (; pulse > 0; pulse--) {
+				gpio_set_value(DISP_BL_CONT_GPIO, 0);
+				udelay(3);
+				gpio_set_value(DISP_BL_CONT_GPIO, 1);
+				udelay(3);
+			}
+
+			lcd_brightness = tune_level;
+		}
+	}
+	mdelay(1);
+	spin_unlock(&bl_ctrl_lock);
+}
+#endif
 
 #if defined(CONFIG_HAS_EARLYSUSPEND)
 static void mipi_samsung_disp_early_suspend(struct early_suspend *h)
@@ -314,9 +554,6 @@ static void mipi_samsung_disp_early_suspend(struct early_suspend *h)
 		return;
 	}
 
-	mipi_samsung_disp_send_cmd(mfd, PANEL_EARLY_OFF, true);
-
-	mfd->resume_state = MIPI_SUSPEND_STATE;
 }
 
 static void mipi_samsung_disp_late_resume(struct early_suspend *h)
@@ -566,88 +803,220 @@ static DEVICE_ATTR(power_reduce, S_IRUGO | S_IWUSR | S_IWGRP,
 static DEVICE_ATTR(auto_brightness, S_IRUGO | S_IWUSR | S_IWGRP,
 			mipi_samsung_auto_brightness_show,
 			mipi_samsung_auto_brightness_store);
-
 #endif
 
-
-#ifdef READ_REGISTER_ESD
-#define ID_05H_IDLE 0x0
-#define ID_E5H_IDLE 0x80
-#define ID_0AH_IDLE 0x9c
-
-static char error_id1[2] = {0x05, 0x00}; /* DTYPE_DCS_READ */
-static char error_id2[2] = {0xE5, 0x00}; /* DTYPE_DCS_READ */
-static char error_id3[2] = {0x0A, 0x00}; /* DTYPE_DCS_READ */
-
-static struct dsi_cmd_desc error_id1_cmd = {
-	DTYPE_DCS_READ, 1, 0, 1, 0, sizeof(error_id1), error_id1};
-static struct dsi_cmd_desc error_id2_cmd = {
-	DTYPE_DCS_READ, 1, 0, 1, 0, sizeof(error_id2), error_id2};
-static struct dsi_cmd_desc error_id3_cmd = {
-	DTYPE_DCS_READ, 1, 0, 1, 0, sizeof(error_id3), error_id3};
-
-static char error_buf[3];
-
-static void read_error_register(struct msm_fb_data_type *mfd)
+#if defined(CONFIG_ESD_ERR_FG_RECOVERY)
+static irqreturn_t err_fg_irq_handler(int irq, void *handle)
 {
-	struct dsi_buf *rp, *tp;
-	struct dsi_cmd_desc *cmd;
+	pr_info("%s : handler start", __func__);
+	disable_irq_nosync(err_fg_gpio);
+	schedule_work(&err_fg_work);
+	pr_info("%s : handler end", __func__);
 
-	mipi_samsung_disp_send_cmd(mfd, MTP_READ_ENABLE, false);
-
-/*	wake_lock(&idle_wake_lock);*//*temp*/
-	mutex_lock(&mfd->dma->ov_mutex);
-
-	mdp4_dsi_cmd_dma_busy_wait(mfd);
-	mdp4_dsi_blt_dmap_busy_wait(mfd);
-	mipi_dsi_mdp_busy_wait();
-
-	tp = &msd.samsung_tx_buf;
-	rp = &msd.samsung_rx_buf;
-
-	cmd = &error_id2_cmd;
-	mipi_dsi_cmds_rx(mfd, tp, rp, cmd, 1);
-	error_buf[1] = *rp->data;
-
-	cmd = &error_id3_cmd;
-	mipi_dsi_cmds_rx(mfd, tp, rp, cmd, 1);
-	error_buf[2] = *rp->data;
-
-	mutex_unlock(&mfd->dma->ov_mutex);
-
-/*	wake_unlock(&idle_wake_lock);*//*temp*/
+	return IRQ_HANDLED;
 }
-
-static void esd_test_work_func(struct work_struct *work)
+static void err_fg_work_func(struct work_struct *work)
 {
 	struct msm_fb_data_type *mfd;
-
 	mfd = platform_get_drvdata(msd.msm_pdev);
 
-	if (unlikely(!mfd)) {
-		pr_info("%s NO PDEV.\n", __func__);
+	if (mfd->resume_state == MIPI_SUSPEND_STATE) {
+		pr_info("[%s] mipi suspend state!! return!\n",__func__);
 		return;
 	}
 
-	pr_debug("%s start", __func__);
-	read_error_register(mfd);
-	pr_debug("%s end E5H=0x%x 0AH=%x\n", __func__,
-					error_buf[1], error_buf[2]);
+	pr_info("%s : start", __func__);
+	err_fg_working = 1;
+	esd_recovery();
+	esd_count++;
+	err_fg_working = 0;
 
-	if ((ID_E5H_IDLE ^ error_buf[1]) || (ID_0AH_IDLE ^ error_buf[2])) {
-
-		pr_info("%s: E5H=%x 0AH=%x\n", __func__,
-				error_buf[1], error_buf[2]);
-
-		esd_execute();
-	}
-
-/*	if (mfd->resume_state != MIPI_SUSPEND_STATE)//temp
-		queue_delayed_work(msd.mpd->esd_workqueue,
-				&(msd.mpd->esd_work), ESD_INTERVAL * HZ); */
-
+	pr_info("%s : end", __func__);
+	return;
 }
 #endif
+
+
+#ifdef DDI_VIDEO_ENHANCE_TUNING
+#define MAX_FILE_NAME 128
+#define TUNING_FILE_PATH "/sdcard/"
+#define TUNE_SIZE 113
+static char tuning_file[MAX_FILE_NAME];
+static char mdni_tuning[TUNE_SIZE];
+
+static struct dsi_cmd_desc mdni_tune_cmd[] = {
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 0,
+		sizeof(mdni_tuning), mdni_tuning},
+};
+
+static char char_to_dec(char data1, char data2)
+{
+	char dec;
+
+	dec = 0;
+
+	if (data1 >= 'a') {
+		data1 -= 'a';
+		data1 += 10;
+	} else if (data1 >= 'A') {
+		data1 -= 'A';
+		data1 += 10;
+	} else
+		data1 -= '0';
+
+	dec = data1 << 4;
+
+	if (data2 >= 'a') {
+		data2 -= 'a';
+		data2 += 10;
+	} else if (data2 >= 'A') {
+		data2 -= 'A';
+		data2 += 10;
+	} else
+		data2 -= '0';
+
+	dec |= data2;
+
+	return dec;
+}
+static void sending_tune_cmd(char *src, int len)
+{
+	struct msm_fb_data_type *mfd;
+	struct dcs_cmd_req cmdreq;
+
+	int data_pos;
+	int cmd_pos;
+
+	cmd_pos = 0;
+
+	for (data_pos = 0; data_pos < len;) {
+		if (*(src + data_pos) == '0') {
+			if (*(src + data_pos + 1) == 'x') {
+					mdni_tuning[cmd_pos] =
+					char_to_dec(*(src + data_pos + 2),
+							*(src + data_pos + 3));
+
+				data_pos += 3;
+				cmd_pos++;
+			} else
+				data_pos++;
+		} else {
+			data_pos++;
+		}
+	}
+
+	printk(KERN_INFO "\n");
+	for (data_pos = 0; data_pos < TUNE_SIZE ; data_pos++)
+		printk(KERN_INFO"0x%x ", mdni_tuning[data_pos]);
+	printk(KERN_INFO "\n");
+
+	mfd = platform_get_drvdata(msd.msm_pdev);
+
+	mutex_lock(&dsi_tx_mutex);
+
+	cmdreq.cmds = mdni_tune_cmd;
+	cmdreq.cmds_cnt = ARRAY_SIZE(mdni_tune_cmd);
+	cmdreq.flags = CMD_REQ_COMMIT;
+	cmdreq.rlen = 0;
+	cmdreq.cb = NULL;
+
+	mipi_dsi_cmdlist_put(&cmdreq);
+
+	mutex_unlock(&dsi_tx_mutex);
+}
+
+static void load_tuning_file(char *filename)
+{
+	struct file *filp;
+	char *dp;
+	long l;
+	loff_t pos;
+	int ret;
+	mm_segment_t fs;
+
+	pr_info("%s called loading file name : [%s]\n", __func__,
+	       filename);
+
+	fs = get_fs();
+	set_fs(get_ds());
+
+	filp = filp_open(filename, O_RDONLY, 0);
+	if (IS_ERR(filp)) {
+		printk(KERN_ERR "%s File open failed\n", __func__);
+		return;
+	}
+
+	l = filp->f_path.dentry->d_inode->i_size;
+	pr_info("%s Loading File Size : %ld(bytes)", __func__, l);
+
+	dp = kmalloc(l + 10, GFP_KERNEL);
+	if (dp == NULL) {
+		pr_info("Can't not alloc memory for tuning file load\n");
+		filp_close(filp, current->files);
+		return;
+	}
+	pos = 0;
+	memset(dp, 0, l);
+
+	pr_info("%s before vfs_read()\n", __func__);
+	ret = vfs_read(filp, (char __user *)dp, l, &pos);
+	pr_info("%s after vfs_read()\n", __func__);
+
+	if (ret != l) {
+		pr_info("vfs_read() filed ret : %d\n", ret);
+		kfree(dp);
+		filp_close(filp, current->files);
+		return;
+	}
+
+	filp_close(filp, current->files);
+
+	set_fs(fs);
+
+	sending_tune_cmd(dp, l);
+
+	kfree(dp);
+}
+
+
+static ssize_t tuning_show(struct device *dev,
+			   struct device_attribute *attr, char *buf)
+{
+	int ret = 0;
+
+	ret = snprintf(buf, MAX_FILE_NAME, "Tunned File Name : %s\n",
+								tuning_file);
+
+	return ret;
+}
+
+static ssize_t tuning_store(struct device *dev,
+			    struct device_attribute *attr, const char *buf,
+			    size_t size)
+{
+	char *pt;
+	memset(tuning_file, 0, sizeof(tuning_file));
+	snprintf(tuning_file, MAX_FILE_NAME, "%s%s", TUNING_FILE_PATH, buf);
+
+	pt = tuning_file;
+	while (*pt) {
+		if (*pt == '\r' || *pt == '\n') {
+			*pt = 0;
+			break;
+		}
+		pt++;
+	}
+
+	pr_info("%s:%s\n", __func__, tuning_file);
+
+	load_tuning_file(tuning_file);
+
+	return size;
+}
+
+static DEVICE_ATTR(tuning, 0664, tuning_show, tuning_store);
+#endif
+
 
 static int __devinit mipi_samsung_disp_probe(struct platform_device *pdev)
 {
@@ -671,6 +1040,8 @@ static int __devinit mipi_samsung_disp_probe(struct platform_device *pdev)
 
 	msm_fb_added_dev = msm_fb_add_device(pdev);
 
+	mutex_init(&dsi_tx_mutex);
+
 #if defined(CONFIG_HAS_EARLYSUSPEND) || defined(CONFIG_LCD_CLASS_DEVICE)
 	msd.msm_pdev = msm_fb_added_dev;
 #endif
@@ -681,6 +1052,29 @@ static int __devinit mipi_samsung_disp_probe(struct platform_device *pdev)
 	msd.early_suspend.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN;
 	register_early_suspend(&msd.early_suspend);
 
+#endif
+
+#if defined(CONFIG_ESD_ERR_FG_RECOVERY)
+	INIT_WORK(&err_fg_work, err_fg_work_func);
+
+	err_fg_gpio = MSM_GPIO_TO_INT(GPIO_ESD_VGH_DET);
+
+	ret = gpio_request(GPIO_ESD_VGH_DET, "err_fg");
+	if (ret) {
+		pr_err("request gpio GPIO_LCD_ESD_DET failed, ret=%d\n",ret);
+		gpio_free(GPIO_ESD_VGH_DET);
+		return ret;
+	}
+
+	gpio_tlmm_config(GPIO_CFG(GPIO_ESD_VGH_DET,  0, GPIO_CFG_INPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),GPIO_CFG_ENABLE);
+
+	ret = request_threaded_irq(err_fg_gpio, NULL, err_fg_irq_handler, 
+		IRQF_TRIGGER_HIGH | IRQF_ONESHOT, "esd_detect", NULL);
+	if (ret) {
+		pr_err("%s : Failed to request_irq. :ret=%d", __func__, ret);
+	}
+
+	disable_irq(err_fg_gpio);
 #endif
 
 #if defined(CONFIG_LCD_CLASS_DEVICE)
@@ -742,9 +1136,21 @@ static int __devinit mipi_samsung_disp_probe(struct platform_device *pdev)
 	}
 #endif
 #endif
-#if defined(CONFIG_FB_MSM_MIPI_HIMAX_TFT_VIDEO_HD_PT)
-		/*	mdnie sysfs create */
-		init_mdnie_class();
+#if defined(CONFIG_MDNIE_LITE_TUNING) \
+	|| defined(CONFIG_FB_MDP4_ENHANCE)
+	/*	mdnie sysfs create */
+	init_mdnie_class();
+#endif
+
+	mipi_dsi_buf_alloc(&mdnie_tune_tx_buf, DSI_BUF_SIZE);
+
+#if defined(DDI_VIDEO_ENHANCE_TUNING)
+	ret = sysfs_create_file(&lcd_device->dev.kobj,
+				&dev_attr_tuning.attr);
+	if (ret) {
+		pr_info("sysfs create fail-%s\n",
+				dev_attr_tuning.attr.name);
+	}
 #endif
 
 	return 0;
