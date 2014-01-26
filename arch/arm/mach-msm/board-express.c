@@ -3258,6 +3258,7 @@ static struct platform_device *common_devices[] __initdata = {
 	&msm8930_iommu_domain_device,
 	&msm_tsens_device,
 	&msm8930_cache_dump_device,
+  	&msm8930_cpu_slp_status,
 
 #if defined(CONFIG_VIDEO_MHL_V2)
 	&mhl_i2c_gpio_device,
